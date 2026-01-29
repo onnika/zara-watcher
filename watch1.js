@@ -5,6 +5,8 @@ import fs from "fs";
 
 dotenv.config();
 
+const CHECK_EVERY_MS = Number(process.env.CHECK_EVERY_MS || 120_000); // 2 хв
+
 const products = JSON.parse(fs.readFileSync("./products.json", "utf-8"));
 
 const transporter = nodemailer.createTransport({
@@ -33,17 +35,8 @@ async function sendTelegram(text) {
   });
 }
 
-function loadState() {
-  try {
-    return JSON.parse(fs.readFileSync("./state.json", "utf-8"));
-  } catch {
-    return { products: {} };
-  }
-}
-
-function saveState(state) {
-  fs.writeFileSync("./state.json", JSON.stringify(state, null, 2), "utf-8");
-}
+// Стан по кожному товару: щоб сповіщати лише на "перехід" out_of_stock -> in_stock
+const state = new Map(); // key: apiUrl, value: { wasInStock: boolean }
 
 function formatMsg(p, inStockSkus) {
   const skuList = inStockSkus.map((x) => x.sku).join(", ");
@@ -62,45 +55,50 @@ async function checkOne(p) {
   });
 
   if (!res.ok) {
-    return { inStock: false, inStockSkus: [], http: res.status };
+    console.log(`[${new Date().toISOString()}] ${p.name}: HTTP ${res.status}`);
+    return;
   }
 
   const data = await res.json();
   const skus = data?.skusAvailability || [];
   const inStockSkus = skus.filter((s) => s.availability && s.availability !== "out_of_stock");
-  return { inStock: inStockSkus.length > 0, inStockSkus, http: 200 };
-}
+  const inStock = inStockSkus.length > 0;
 
-const state = loadState(); // { products: { [apiUrl]: { wasInStock: boolean } } }
-state.products ||= {};
-
-let notifiedCount = 0;
-
-for (const p of products) {
-  const prev = state.products[p.apiUrl] || { wasInStock: false };
-
-  const now = new Date().toISOString();
-  const r = await checkOne(p);
+  const prev = state.get(p.apiUrl) || { wasInStock: false };
 
   console.log(
-    `[${now}] ${p.name}: http=${r.http} inStock=${r.inStock} prevWasInStock=${prev.wasInStock} skus=[${r.inStockSkus
+    `[${new Date().toISOString()}] ${p.name}: inStock=${inStock} skus=[${inStockSkus
       .map((x) => x.sku)
       .join(", ")}]`
   );
 
-  // ✅ сповіщаємо ТІЛЬКИ на перехід
-  if (r.inStock && !prev.wasInStock) {
-    const msg = formatMsg(p, r.inStockSkus);
+  // ✅ тільки 1 раз: коли З'ЯВИВСЯ (перехід)
+  if (inStock && !prev.wasInStock) {
+    const msg = formatMsg(p, inStockSkus);
     const subject = `🛍 Zara: ${p.name} — є в наявності!`;
 
     await Promise.allSettled([sendTelegram(msg), sendEmail(subject, msg)]);
-    notifiedCount++;
-    console.log(`🔔 Notified: ${p.name}`);
+    console.log(`🔔 Notified once: ${p.name}`);
+
+    state.set(p.apiUrl, { wasInStock: true });
+    return;
   }
 
-  // оновлюємо стан
-  state.products[p.apiUrl] = { wasInStock: r.inStock };
+  // якщо пропав — скинути, щоб наступного разу знову спрацювало
+  if (!inStock && prev.wasInStock) {
+    state.set(p.apiUrl, { wasInStock: false });
+    console.log(`↩️ Back to out_of_stock: ${p.name}`);
+    return;
+  }
+
+  // інакше просто оновлюємо
+  state.set(p.apiUrl, { wasInStock: inStock });
 }
 
-saveState(state);
-console.log(`Done. Notifications sent: ${notifiedCount}`);
+async function tick() {
+  await Promise.allSettled(products.map((p) => checkOne(p)));
+}
+
+console.log(`Watching ${products.length} products. Check every ${Math.round(CHECK_EVERY_MS / 1000)}s`);
+setInterval(() => tick().catch(() => {}), CHECK_EVERY_MS);
+tick().catch(() => {});
