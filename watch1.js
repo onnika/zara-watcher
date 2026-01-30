@@ -5,9 +5,53 @@ import fs from "fs";
 
 dotenv.config();
 
-const CHECK_EVERY_MS = Number(process.env.CHECK_EVERY_MS || 120_000); // 2 хв
 
 const products = JSON.parse(fs.readFileSync("./products.json", "utf-8"));
+
+let fastModeUntil = 0;
+
+let currentTimeout = null;
+let isTickRunning = false;
+
+function getNextDelay() {
+  const now = Date.now();
+
+  // якщо був in_stock останні 10 хв → швидкий режим
+  if (now < fastModeUntil) {
+    return 10000 + Math.random() * 5000; // 10–15 сек
+  }
+
+  // звичайний режим
+  return 40000 + Math.random() * 30000; // 40–70 сек
+}
+
+async function smartLoop() {
+  try {
+    if (isTickRunning) {
+      // на всякий випадок: не накладаємо перевірки
+      const delay = getNextDelay();
+      console.log(`⏭️ Tick still running. Next try in ${(delay / 1000).toFixed(0)} sec`);
+      return setTimeout(smartLoop, delay);
+    }
+
+    isTickRunning = true;
+
+    const anyInStock = await tick();
+
+    if (anyInStock) {
+      fastModeUntil = Date.now() + 10 * 60 * 1000; // 10 хв швидкого режиму
+    }
+  } catch (e) {
+    console.log("Loop error:", e.message);
+  } finally {
+    isTickRunning = false;
+  }
+
+  const delay = getNextDelay();
+  console.log(`⏳ Next check in ${(delay / 1000).toFixed(0)} sec`);
+  setTimeout(smartLoop, delay);
+}
+
 
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -43,9 +87,9 @@ function formatMsg(p, inStockSkus) {
   return (
     `🔥 Zara: З'ЯВИВСЯ ONLINE!\n` +
     `📌 ${p.name}\n\n` +
-    `👉 Відкрити товар:\n${p.pageUrl}\n` +
-    (skuList ? `\nSKU (in stock): ${skuList}\n` : "") +
-    `\nAPI:\n${p.apiUrl}`
+    `👉 Відкрити товар:\n${p.pageUrl}\n` 
+    /*(skuList ? `\nSKU (in stock): ${skuList}\n` : "") +
+    `\nAPI:\n${p.apiUrl}`*/
   );
 }
 
@@ -66,11 +110,6 @@ async function checkOne(p) {
 
   const prev = state.get(p.apiUrl) || { wasInStock: false };
 
-  console.log(
-    `[${new Date().toISOString()}] ${p.name}: inStock=${inStock} skus=[${inStockSkus
-      .map((x) => x.sku)
-      .join(", ")}]`
-  );
 
   // ✅ тільки 1 раз: коли З'ЯВИВСЯ (перехід)
   if (inStock && !prev.wasInStock) {
@@ -79,6 +118,12 @@ async function checkOne(p) {
 
     await Promise.allSettled([sendTelegram(msg), sendEmail(subject, msg)]);
     console.log(`🔔 Notified once: ${p.name}`);
+
+    console.log(
+    `[${new Date().toISOString()}] ${p.name}: inStock=${inStock} skus=[${inStockSkus
+      .map((x) => x.sku)
+      .join(", ")}]`
+    );
 
     state.set(p.apiUrl, { wasInStock: true });
     return;
@@ -93,12 +138,19 @@ async function checkOne(p) {
 
   // інакше просто оновлюємо
   state.set(p.apiUrl, { wasInStock: inStock });
+  return inStock;
 }
 
 async function tick() {
-  await Promise.allSettled(products.map((p) => checkOne(p)));
+  const results = await Promise.allSettled(products.map((p) => checkOne(p)));
+
+  // якщо хоча б один товар in_stock
+  const anyInStock = results.some(
+    (r) => r.status === "fulfilled" && r.value === true
+  );
+
+  return anyInStock;
 }
 
-console.log(`Watching ${products.length} products. Check every ${Math.round(CHECK_EVERY_MS / 1000)}s`);
-setInterval(() => tick().catch(() => {}), CHECK_EVERY_MS);
-tick().catch(() => {});
+console.log(`Watching ${products.length} products.`);
+smartLoop();
