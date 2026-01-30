@@ -10,7 +10,6 @@ const products = JSON.parse(fs.readFileSync("./products.json", "utf-8"));
 
 let fastModeUntil = 0;
 
-let currentTimeout = null;
 let isTickRunning = false;
 
 function getNextDelay() {
@@ -93,51 +92,78 @@ function formatMsg(p, inStockSkus) {
   );
 }
 
-async function checkOne(p) {
-  const res = await fetch(p.apiUrl, {
+async function checkOne(product) {
+  const res = await fetch(product.apiUrl, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
   });
 
   if (!res.ok) {
-    console.log(`[${new Date().toISOString()}] ${p.name}: HTTP ${res.status}`);
+    console.log(`[${new Date().toISOString()}] ${product.name}: HTTP ${res.status}`);
     return;
   }
 
   const data = await res.json();
+  console.log(data);
   const skus = data?.skusAvailability || [];
   const inStockSkus = skus.filter((s) => s.availability && s.availability !== "out_of_stock");
   const inStock = inStockSkus.length > 0;
 
-  const prev = state.get(p.apiUrl) || { wasInStock: false };
+  const myFoundSizes = inStockSkus.filter(item => {
+    // 1. Беремо ID товару (наприклад, 452721095)
+    const skuId = item.sku; 
+    
+    // 2. Дізнаємось його людську назву через твій mapping (наприклад, "S")
+    const sizeName = product.skuToSize[skuId];
+
+    // 3. Перевіряємо, чи є ця назва у списку бажаних ("S" входить в ["S", "M"]?)
+    // Важливо: targetSizes може бути undefined, тому додаємо перевірку
+    return sizeName && product.targetSizes.includes(sizeName);
+  });
+
+  // Якщо масив myFoundSizes не порожній — значить знайдено саме ТВІЙ розмір
+  if (myFoundSizes.length > 0) {
+      console.log("🎉 УРА! ЗНАЙДЕНО ПОТРІБНІ РОЗМІРИ:");
+      
+      myFoundSizes.forEach(item => {
+          const sizeName = product.skuToSize[item.sku];
+          console.log(`- Розмір: ${sizeName} (SKU: ${item.sku})`);
+      });
+
+      // Тут викликаєш sendTelegramNotification(product, myFoundSizes);
+  } else {
+      // console.log("Доступні інші розміри, але не твої.");
+  }
+
+  const prev = state.get(product.apiUrl) || { wasInStock: false };
 
 
   // ✅ тільки 1 раз: коли З'ЯВИВСЯ (перехід)
   if (inStock && !prev.wasInStock) {
-    const msg = formatMsg(p, inStockSkus);
-    const subject = `🛍 Zara: ${p.name} — є в наявності!`;
+    const msg = formatMsg(product, inStockSkus);
+    const subject = `🛍 Zara: ${product.name} — є в наявності!`;
 
     await Promise.allSettled([sendTelegram(msg), sendEmail(subject, msg)]);
-    console.log(`🔔 Notified once: ${p.name}`);
+    console.log(`🔔 Notified once: ${product.name}`);
 
     console.log(
-    `[${new Date().toISOString()}] ${p.name}: inStock=${inStock} skus=[${inStockSkus
+    `[${new Date().toISOString()}] ${product.name}: inStock=${inStock} skus=[${inStockSkus
       .map((x) => x.sku)
       .join(", ")}]`
     );
 
-    state.set(p.apiUrl, { wasInStock: true });
+    state.set(product.apiUrl, { wasInStock: true });
     return;
   }
 
   // якщо пропав — скинути, щоб наступного разу знову спрацювало
   if (!inStock && prev.wasInStock) {
-    state.set(p.apiUrl, { wasInStock: false });
-    console.log(`↩️ Back to out_of_stock: ${p.name}`);
+    state.set(product.apiUrl, { wasInStock: false });
+    console.log(`↩️ Back to out_of_stock: ${product.name}`);
     return;
   }
 
   // інакше просто оновлюємо
-  state.set(p.apiUrl, { wasInStock: inStock });
+  state.set(product.apiUrl, { wasInStock: inStock });
   return inStock;
 }
 
