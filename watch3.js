@@ -59,6 +59,7 @@ loadCookies(); // Завантажуємо при старті
 let products = [];
 try {
     products = JSON.parse(fs.readFileSync(CONFIG.productsFile, "utf-8"));
+    console.log(`📦 Завантажено ${products.length} товарів з products.json`);
 } catch (e) {
     console.error("❌ Не вдалося прочитати products.json"); process.exit(1);
 }
@@ -148,7 +149,11 @@ async function addToCart(product, skuId, sizeName) {
 // --- API МОНІТОРИНГ ---
 function getNextDelay() {
     const now = Date.now();
+    // Якщо "Турбо-режим" активний (знайшли товар протягом останніх 10 хв)
+    // Відпочиваємо мало: 10–15 секунд
     if (now < fastModeUntil) return 10000 + Math.random() * 5000; 
+    // Звичайний режим (нічого немає)
+    // Відпочиваємо довше: 40–70 секунд, щоб не дратувати сервер
     return 40000 + Math.random() * 30000;
 }
 
@@ -163,17 +168,47 @@ async function sendTelegram(text) {
 }
 
 async function checkOne(product) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // Даємо 10 сек
+
     try {
-        const cacheBuster = Math.floor(Math.random() * 1000000000);
-        const res = await fetch(`${product.apiUrl}?cb=${cacheBuster}`, {
+        // Генеруємо випадковий ID запиту (RequestId), щоб виглядати як реальний моніторинг
+        const requestId = Math.floor(Math.random() * 1000000000);
+        
+        const res = await fetch(`${product.apiUrl}?cb=${requestId}`, {
+            signal: controller.signal,
             headers: { 
-                "User-Agent": "Zara/13.0.0 (Android 14; Pixel 7)", 
+                // 🔥 ПОВНИЙ НАБІР ЗАГОЛОВКІВ CHROME (WINDOWS) 🔥
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Cookie": GLOBAL_COOKIE,
+                
+                // Це критично важливо для обходу 403:
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Cache-Control": "no-cache",
-                "Cookie": GLOBAL_COOKIE // Використовуємо куки з файлу
+                "Pragma": "no-cache",
+                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1"
             },
         });
 
-        if (!res.ok) return false;
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+            // Якщо 403 - не спамимо в консоль, просто пишемо "Block"
+            if (res.status === 403) {
+                 process.stdout.write("x"); // 'x' означає 403
+                 return false;
+            }
+            console.log(`\n⚠️ ${product.name}: HTTP ${res.status}`); 
+            return false;
+        }
 
         const data = await res.json();
         const inStockSkus = (data?.skusAvailability || []).filter((s) => s.availability && s.availability !== "out_of_stock");
@@ -192,7 +227,6 @@ async function checkOne(product) {
             let sizesMsg = myFoundSizes.map(i => product.skuToSize[i.sku]).join(", ");
             await sendTelegram(`🔥 <b>ЗНАЙДЕНО!</b>\n👗 <a href="${product.pageUrl}">${product.name}</a>\n✅ Розміри: ${sizesMsg}`);
 
-            // Сортування за пріоритетом
             myFoundSizes.sort((a, b) => {
                 const sizeA = product.skuToSize[a.sku];
                 const sizeB = product.skuToSize[b.sku];
@@ -201,8 +235,7 @@ async function checkOne(product) {
 
             const bestChoice = myFoundSizes[0];
             const sizeName = product.skuToSize[bestChoice.sku];
-
-            console.log(`🎯 Пріоритет: ${sizeName}`);
+            
             buyQueue.push({ product: product, productName: product.name, skuId: bestChoice.sku, sizeName: sizeName });
             processBuyQueue();
 
@@ -214,17 +247,53 @@ async function checkOne(product) {
         process.stdout.write(hasTargetStock ? "!" : ".");
         return hasTargetStock;
 
-    } catch (e) { return false; }
+    } catch (e) {
+        clearTimeout(timeoutId);
+        return false; 
+    }
 }
 
 async function smartLoop() {
     if (isTickRunning) return setTimeout(smartLoop, 1000);
     isTickRunning = true;
+
     try {
-        const results = await Promise.all(products.map(p => checkOne(p)));
-        if (results.some(r => r === true)) fastModeUntil = Date.now() + 10 * 60 * 1000;
-    } finally { isTickRunning = false; }
-    setTimeout(smartLoop, getNextDelay());
+        console.log(`\n🔄 Починаю коло перевірки (${new Date().toLocaleTimeString()})...`);
+        
+        let somethingFound = false;
+
+        // Йдемо по черзі, а не натовпом
+        for (const product of products) {
+            // Перевіряємо один товар
+            const result = await checkOne(product);
+            
+            // Якщо знайшли - запам'ятовуємо, щоб увімкнути турбо-режим
+            if (result) somethingFound = true;
+            
+            // 🛑 ПАУЗА МІЖ ТОВАРАМИ (Safety Gap)
+            // Випадкова затримка від 1 до 3 секунд.
+            // Це збиває ритм і обманює захист ботів.
+            const interItemDelay = 1000 + Math.random() * 2000;
+            await new Promise(r => setTimeout(r, interItemDelay));
+        }
+
+        // Якщо хоч щось знайшли у цьому колі — вмикаємо режим "Форсаж" на 10 хвилин
+        if (somethingFound) {
+            console.log("🔥 Увімкнено ТУРБО-РЕЖИМ на 10 хвилин!");
+            fastModeUntil = Date.now() + 4 * 60 * 1000;
+        }
+
+    } catch (e) {
+        console.log("Loop error:", e.message);
+    } finally {
+        isTickRunning = false;
+    }
+
+    // Пауза ПІСЛЯ всього кола
+    const delay = getNextDelay();
+    console.log(`💤 Коло завершено. Сплю ${(delay / 1000).toFixed(0)} сек...`);
+    
+    setTimeout(smartLoop, delay);
 }
 
 console.log(`🚀 Smart Sniper v3.0 (Persistent Session) запущено!`);

@@ -79,8 +79,7 @@ async function processBuyQueue() {
     }
     isBuyingProcessActive = false;
 }
-
-// --- ФУНКЦІЯ ПОКУПКИ (UI + ХІРУРГІЯ) ---
+// --- ФУНКЦІЯ ПОКУПКИ (БРОНЕБІЙНА ВЕРСІЯ) ---
 async function addToCart(product, skuId, sizeName) {
     console.log(`🚀 (SNIPER) Відкриваю вікно з твоїм профілем...`);
 
@@ -91,18 +90,53 @@ async function addToCart(product, skuId, sizeName) {
         context = await chromium.launchPersistentContext(CONFIG.userDataDir, {
             headless: false, 
             channel: "chrome", 
-            viewport: { width: 1280, height: 800 },
-            args: ['--disable-blink-features=AutomationControlled']
+            viewport: null, 
+            
+            // 👇 1. ЧОРНИЙ СПИСОК: Ігноруємо ВСЕ, що викликає жовті смужки
+            // Навіть якщо плагін Stealth спробує їх додати - Chrome їх проігнорує.
+            ignoreDefaultArgs: [
+                '--enable-automation', 
+                '--no-sandbox',
+                '--disable-blink-features=AutomationControlled' // <--- ВБИВАЄ ОСТАННЮ СМУЖКУ
+            ],
+
+            args: [
+                '--start-maximized',
+                '--disable-infobars',
+                
+                // 👇 2. ЛІКИ ВІД ВІКНА "ВІДНОВИТИ":
+                '--disable-session-crashed-bubble',
+                '--hide-crash-restore-bubble',
+                '--disable-restore-session-state',
+                
+                // Інші корисні налаштування
+                '--no-default-browser-check',
+                '--disable-dev-shm-usage',
+                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            ]
         });
 
         const page = await context.pages()[0] || await context.newPage();
         
-        // Блокування поки залишаємо для швидкості покупки
-        const blockResources = '**/*.{png,jpg,jpeg,svg,woff,woff2}';
+        // Тихе маскування (замість тих прапорців, що ми заблокували)
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+
+        // Блокуємо важкі шрифти
+        const blockResources = '**/*.{svg,woff,woff2}'; 
         await page.route(blockResources, route => route.abort());
 
         console.log("🌍 Завантажую сторінку...");
         await page.goto(product.pageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+        // 👇 3. ЕКСТРЕНА ДОПОМОГА: Якщо вилізло вікно "Відновити" - закриваємо його кодом
+        // Ми просто клікаємо в будь-яке місце сторінки, і вікно зазвичай зникає, або ігноруємо його
+        try {
+            const closeRestore = page.locator('#close-restore-bubble-btn'); // Спроба знайти кнопку (рідко працює, але хай буде)
+            if (await closeRestore.isVisible({timeout: 500})) await closeRestore.click();
+        } catch(e) {}
+
 
         // 1. Тиснемо ДОДАТИ
         console.log("👇 Клікаю 'ДОДАТИ'...");
@@ -132,39 +166,31 @@ async function addToCart(product, skuId, sizeName) {
 
         await sendTelegram(`🛒 <b>ТОВАР У КОШИКУ!</b>\n👗 ${product.name}\n📏 Розмір: ${sizeName}\n\n👉 <b>Швидше біжи до комп'ютера!</b>`);
 
-        // --- ПІДГОТОВКА ДЛЯ ЛЮДИНИ (НОВА ЛОГІКА) ---
-        console.log("🔓 Знімаю блокування і йду в кошик...");
-        await page.unroute(blockResources); 
+        // --- ЧИСТКА ІНТЕРФЕЙСУ ---
+        console.log("🔓 Вмикаю повний режим...");
+        await page.unrouteAll(); 
         
-        // Переходимо в кошик
         await page.goto("https://www.zara.com/ua/uk/shop/cart", { waitUntil: "domcontentloaded" });
-        
-        // Чекаємо секунду, щоб сторінка (і глюки) провантажились
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(3000); 
 
-        // 🔥 ХІРУРГІЧНЕ ВТРУЧАННЯ: ВИДАЛЯЄМО ШТОРКУ 🔥
-        console.log("🔪 Вирізаю сіру шторку і розблоковую прокрутку...");
+        // 🔥 ЧИСТКА ЕКРАНУ 🔥
+        console.log("🔪 Роблю сторінку ідеальною...");
         
         await page.evaluate(() => {
-            // 1. Знаходимо всі елементи, схожі на "шторку" (overlay/backdrop/mask) і видаляємо їх
-            // Zara використовує класи типу 'zds-modal-backdrop', 'mask', або просто div на весь екран
-            const blockers = document.querySelectorAll('div[class*="backdrop"], div[class*="overlay"], div[class*="mask"], div[class*="modal"]');
+            const cookieBanner = document.getElementById('onetrust-consent-sdk') || document.querySelector('.onetrust-pc-dark-filter');
+            if (cookieBanner) cookieBanner.remove();
+
+            const blockers = document.querySelectorAll('div[class*="backdrop"], div[class*="overlay"], div[class*="mask"]');
             blockers.forEach(el => el.remove());
 
-            // 2. Дуже важливо: Модальні вікна блокують <body> (роблять overflow: hidden)
-            // Ми примусово вмикаємо прокрутку назад
             document.body.style.overflow = 'auto';
-            document.body.style.position = 'static';
             document.documentElement.style.overflow = 'auto';
-            
-            console.log("Cleaned UI.");
         });
 
         console.log("🛑 Я НЕ ЗАКРИВАЮ БРАУЗЕР.");
-        console.log("💳 Інтерфейс розблоковано. Оплачуй!");
+        console.log("💳 Жовтих смужок немає. Кнопка є. Оплачуй!");
         console.log("⏳ Чекаю 1 годину...");
 
-        // Тримаємо вікно відкритим
         await new Promise(resolve => {
             context.on('close', resolve);
             setTimeout(resolve, 3600000); 
@@ -175,10 +201,6 @@ async function addToCart(product, skuId, sizeName) {
     } catch (e) {
         console.error("Sniper Error:", e.message);
         if (context) await context.close();
-    } finally {
-        if (context && !browserClosed) {
-            // await context.close(); 
-        }
     }
 }
 
@@ -199,22 +221,55 @@ async function sendTelegram(text) {
     } catch (e) {}
 }
 
+
 async function checkOne(product) {
+    // 1. Захист від зависання (таймер 10 сек)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
-        const cacheBuster = Math.floor(Math.random() * 1000000000);
-        const res = await fetch(`${product.apiUrl}?cb=${cacheBuster}`, {
+        // Генеруємо випадковий ID, щоб уникнути кешу
+        const requestId = Math.floor(Math.random() * 1000000000);
+        
+        const res = await fetch(`${product.apiUrl}?cb=${requestId}`, {
+            signal: controller.signal, // Підключаємо таймер
             headers: { 
-                "User-Agent": "Zara/13.0.0 (Android 14; Pixel 7)", 
+                // 🔥 ПРАВИЛЬНІ ЗАГОЛОВКИ (Chrome Desktop) 🔥
+                // Це відповідає твоїм кукам з login.js
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Cookie": GLOBAL_COOKIE,
+                
+                // Додаткове маскування під людину
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Cache-Control": "no-cache",
-                "Cookie": GLOBAL_COOKIE 
+                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1"
             },
         });
 
-        if (!res.ok) return false;
+        clearTimeout(timeoutId); // Якщо відповідь прийшла — вимикаємо таймер
+
+        if (!res.ok) {
+            // Тихий обробіток помилок (щоб не засмічувати консоль при 403)
+            if (res.status === 403) {
+                 process.stdout.write("x"); 
+                 return false;
+            }
+            console.log(`\n⚠️ ${product.name}: HTTP ${res.status}`);
+            return false;
+        }
 
         const data = await res.json();
         const inStockSkus = (data?.skusAvailability || []).filter((s) => s.availability && s.availability !== "out_of_stock");
         
+        // --- ТВОЯ ЛОГІКА (БЕЗ ЗМІН) ---
         const myFoundSizes = inStockSkus.filter(item => {
             const sizeName = product.skuToSize[item.sku];
             return sizeName && product.targetSizes && product.targetSizes.includes(sizeName);
@@ -237,6 +292,8 @@ async function checkOne(product) {
             const sizeName = product.skuToSize[bestChoice.sku];
 
             console.log(`🎯 Пріоритет: ${sizeName}`);
+            
+            // Додаємо в чергу
             buyQueue.push({ product: product, productName: product.name, skuId: bestChoice.sku, sizeName: sizeName });
             processBuyQueue();
 
@@ -248,17 +305,54 @@ async function checkOne(product) {
         process.stdout.write(hasTargetStock ? "!" : ".");
         return hasTargetStock;
 
-    } catch (e) { return false; }
+    } catch (e) {
+        clearTimeout(timeoutId);
+        // Ігноруємо помилки тайм-ауту, щоб не зупиняти цикл
+        return false; 
+    }
 }
 
 async function smartLoop() {
     if (isTickRunning) return setTimeout(smartLoop, 1000);
     isTickRunning = true;
+
     try {
-        const results = await Promise.all(products.map(p => checkOne(p)));
-        if (results.some(r => r === true)) fastModeUntil = Date.now() + 10 * 60 * 1000;
-    } finally { isTickRunning = false; }
-    setTimeout(smartLoop, getNextDelay());
+        console.log(`\n🔄 Починаю коло перевірки (${new Date().toLocaleTimeString()})...`);
+        
+        let somethingFound = false;
+
+        // Йдемо по черзі, а не натовпом
+        for (const product of products) {
+            // Перевіряємо один товар
+            const result = await checkOne(product);
+            
+            // Якщо знайшли - запам'ятовуємо, щоб увімкнути турбо-режим
+            if (result) somethingFound = true;
+            
+            // 🛑 ПАУЗА МІЖ ТОВАРАМИ (Safety Gap)
+            // Випадкова затримка від 1 до 3 секунд.
+            // Це збиває ритм і обманює захист ботів.
+            const interItemDelay = 1000 + Math.random() * 2000;
+            await new Promise(r => setTimeout(r, interItemDelay));
+        }
+
+        // Якщо хоч щось знайшли у цьому колі — вмикаємо режим "Форсаж" на 10 хвилин
+        if (somethingFound) {
+            console.log("🔥 Увімкнено ТУРБО-РЕЖИМ на 10 хвилин!");
+            fastModeUntil = Date.now() + 4 * 60 * 1000;
+        }
+
+    } catch (e) {
+        console.log("Loop error:", e.message);
+    } finally {
+        isTickRunning = false;
+    }
+
+    // Пауза ПІСЛЯ всього кола
+    const delay = getNextDelay();
+    console.log(`💤 Коло завершено. Сплю ${(delay / 1000).toFixed(0)} сек...`);
+    
+    setTimeout(smartLoop, delay);
 }
 
 console.log(`🚀 Smart Sniper v3.1 (Pay in Bot) запущено!`);
