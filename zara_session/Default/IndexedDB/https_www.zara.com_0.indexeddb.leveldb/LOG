@@ -1,0 +1,14 @@
+2026/01/31-19:39:36.610 7534 Reusing MANIFEST C:\Users\onnik\Documents\projects\zara-watcher\zara_session\Default\IndexedDB\https_www.zara.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/01/31-19:39:36.611 7534 Recovering log #76
+2026/01/31-19:39:36.611 7534 Reusing old log C:\Users\onnik\Documents\projects\zara-watcher\zara_session\Default\IndexedDB\https_www.zara.com_0.indexeddb.leveldb/000076.log 
+2026/01/31-19:39:36.611 7534 Delete type=2 #74
+2026/01/31-19:39:37.291 7b5c Level-0 table #81: started
+2026/01/31-19:39:37.294 7b5c Level-0 table #81: 1388 bytes OK
+2026/01/31-19:39:37.298 7b5c Delete type=0 #76
+2026/01/31-19:39:37.298 7b5c Manual compaction at level-0 from '\x00\x19\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1a\x00\x00\x00' @ 0 : 0; will stop at '\x00\x19\x01\x03\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 2201 : 1
+2026/01/31-19:39:37.298 7b5c Compacting 1@0 + 1@1 files
+2026/01/31-19:39:37.301 7b5c Generated table #82@0: 96 keys, 1644 bytes
+2026/01/31-19:39:37.302 7b5c Compacted 1@0 + 1@1 files => 1644 bytes
+2026/01/31-19:39:37.305 7b5c compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/01/31-19:39:37.305 7b5c Delete type=2 #81
+2026/01/31-19:39:37.305 7b5c Manual compaction at level-0 from '\x00\x19\x01\x03\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 2201 : 1 .. '\x00\x1a\x00\x00\x00' @ 0 : 0; will stop at (end)
